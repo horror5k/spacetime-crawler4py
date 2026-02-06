@@ -1,19 +1,37 @@
 import re
+import json
+import os
 from urllib.parse import urlparse, urljoin, urldefrag
 from bs4 import BeautifulSoup
-from tokenizer import tokenize_text, computeWordFrequencies
-import json
+from tokenizer import tokenize_text
 from collections import defaultdict
 
+REPORT_FILE = 'report_data.json'
 
-report = {
-    'unique_pages': set(),
-    'longest_page': {'url': '', 'word_count': 0},
-    'all_words': [],
-    'subdomains': defaultdict(int)
-}
+def load_report():
+    if os.path.exists(REPORT_FILE):
+        with open(REPORT_FILE, 'r') as f:
+            data = json.load(f)
+            data['unique_pages'] = set(data['unique_pages'])
+            data['subdomains'] = defaultdict(int, data['subdomains'])
+            return data
+    return {
+        'unique_pages': set(),
+        'longest_page': {'url': '', 'word_count': 0},
+        'word_counts': {},
+        'subdomains': defaultdict(int)
+    }
 
+def update_report():
+    save_data = dict(report)
+    save_data['unique_pages'] = list(report['unique_pages'])
+    save_data['unique_pages_count'] = len(report['unique_pages'])
+    save_data['word_counts'] = dict(sorted(report['word_counts'].items(), key=lambda x: x[1], reverse=True)[:50])
+    save_data['subdomains'] = dict(sorted(report['subdomains'].items()))
+    with open(REPORT_FILE, 'w') as f:
+        json.dump(save_data, f)
 
+report = load_report()
 
 
 STOP_WORDS = {
@@ -34,8 +52,6 @@ STOP_WORDS = {
     'who', 'who\'s', 'whom', 'why', 'why\'s', 'with', 'won\'t', 'would', 'wouldn\'t', 'you', 'you\'d', 
     'you\'ll', 'you\'re', 'you\'ve', 'your', 'yours', 'yourself', 'yourselves'
 }
-
-
 
 
 def scraper(url, resp):
@@ -89,17 +105,20 @@ def extract_next_links(url, resp):
             report['longest_page']['url'] = cleaned_url
             report['longest_page']['word_count'] = word_count
         
-        # 3. Collect all words
+        # 3. Word Frequencies
         for token in tokens:
             if token not in STOP_WORDS and len(token) > 1:
-                report['all_words'].append(token)
+                report['word_counts'][token] = report['word_counts'].get(token, 0) + 1
         
         # 4. Subdomains
         parsed = urlparse(cleaned_url)
         hostname = parsed.hostname
         if hostname and 'uci.edu' in hostname:
             report['subdomains'][hostname] += 1
-            
+        
+        # Save
+        update_report()
+        
         """END REPORT"""
 
         links = []
@@ -118,10 +137,6 @@ def extract_next_links(url, resp):
         return []
 
 
-def save_report():
-    pass
-
-
 def is_valid(url):
     # Decide whether to crawl this url or not. 
     # If you decide to crawl it, return True; otherwise return False.
@@ -130,14 +145,71 @@ def is_valid(url):
         parsed = urlparse(url)
         if parsed.scheme not in set(["http", "https"]):
             return False
+        
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+        hostname = hostname.lower()
+        
+        domains = ['ics.uci.edu', 'cs.uci.edu', 'informatics.uci.edu', 'stat.uci.edu']
+        if not any(hostname == d or hostname.endswith('.' + d) for d in domains):
+            return False
+        
+        if '/wp-content/uploads/' in parsed.path.lower():
+            return False
+        
+        if 'wp-login.php' in parsed.path.lower():
+            return False        
+        
+        if re.search(r'/day/\d{4}-\d{2}-\d{2}', parsed.path):
+            return False
+        if re.search(r'/week/\d{4}-\d{2}-\d{2}', parsed.path):
+            return False
+        if re.search(r'/events/\d{4}-\d{2}-\d{2}', parsed.path):
+            return False
+        if re.search(r'/events/month/\d{4}-\d{2}', parsed.path):
+            return False
+        if re.search(r'/events/category/.+/\d{4}-\d{2}', parsed.path):
+            return False
+        if re.search(r'/events/category/.+/(today|month|list)', parsed.path):
+            return False
+        if 'eventdisplay' in parsed.query.lower():
+            return False
+        if 'tribe-bar-date' in parsed.query.lower():
+            return False
+        if 'tribe__ecp_custom' in parsed.query.lower():
+            return False
+        if 'eventdate' in parsed.query.lower():
+            return False
+
+        if 'share=' in parsed.query.lower():
+            return False
+        
+        if 'grape' in hostname and ('/wiki/' in parsed.path.lower() or '/timeline' in parsed.path.lower()):
+            return False      
+
+        if 'ical' in parsed.query.lower():
+            return False
+        
+        if 'archive' in hostname and 'keywords' in parsed.query.lower():
+            return False
+        
+        if 'doku.php' in parsed.path.lower():
+            return False
+        
+        if hostname.startswith('netreg'):
+            return False
+        
         return not re.match(
             r".*\.(css|js|bmp|gif|jpe?g|ico"
             + r"|png|tiff?|mid|mp2|mp3|mp4"
             + r"|wav|avi|mov|mpeg|ram|m4v|mkv|ogg|ogv|pdf"
             + r"|ps|eps|tex|ppt|pptx|doc|docx|xls|xlsx|names"
             + r"|data|dat|exe|bz2|tar|msi|bin|7z|psd|dmg|iso"
-            + r"|epub|dll|cnf|tgz|sha1"
-            + r"|thmx|mso|arff|rtf|jar|csv"
+            + r"|epub|dll|cnf|tgz|sha1|apk"
+            + r"|thmx|mso|arff|rtf|jar"
+            + r"|csv|txt|pyc|pyo|bib|py|c|m|ma|ppsx" #new
+            + r"|pps|odc|z|scm|lsp|rkt|nb|lif|sh|sql|sas|pov|ff|rss|ss|shtml" #new
             + r"|rm|smil|wmv|swf|wma|zip|rar|gz)$", parsed.path.lower())
 
     except TypeError:
